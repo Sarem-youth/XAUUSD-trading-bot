@@ -2,6 +2,8 @@ import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
+from datetime import datetime
+import time
 
 @dataclass
 class PASignal:
@@ -11,13 +13,33 @@ class PASignal:
     timeframe: str
 
 class PriceActionAnalyzer:
-    def __init__(self, symbol, timeframes):
+    def __init__(self, symbol, timeframes, cache_manager=None):
         self.symbol = symbol
         self.timeframes = timeframes
-
+        self.cache = cache_manager
+        self.last_api_call = datetime.now()
+        
     def get_data(self, timeframe, bars=100):
+        cache_key = f"{self.symbol}_{timeframe}_{bars}"
+        
+        if self.cache:
+            cached_data = self.cache.get(cache_key)
+            if cached_data is not None:
+                return cached_data
+                
+        # Rate limiting
+        elapsed = (datetime.now() - self.last_api_call).total_seconds()
+        if elapsed < settings.API_CALL_DELAY:
+            time.sleep(settings.API_CALL_DELAY - elapsed)
+            
         rates = mt5.copy_rates_from_pos(self.symbol, timeframe, 0, bars)
-        return pd.DataFrame(rates)
+        df = pd.DataFrame(rates)
+        
+        if self.cache:
+            self.cache.set(cache_key, df)
+            
+        self.last_api_call = datetime.now()
+        return df
 
     def analyze_all_timeframes(self):
         signals = []
@@ -67,6 +89,28 @@ class PriceActionAnalyzer:
         }
 
     def _combine_analysis(self, zones, patterns, timeframe):
-        # Combine zones and patterns to generate a signal
-        # Implementation details here
-        return PASignal(strength=0.5, direction="BUY", pattern="", timeframe=str(timeframe))
+        # Enhanced signal generation with less dependency on external data
+        signal_strength = 0.0
+        direction = "NONE"
+        
+        # Calculate signal based on technical patterns only
+        recent_zones = [z for z in zones if z['strength'] > np.mean([x['strength'] for x in zones])]
+        
+        if recent_zones:
+            latest_zone = recent_zones[-1]
+            direction = "SELL" if latest_zone['type'] == 'supply' else "BUY"
+            signal_strength = latest_zone['strength']
+            
+        if patterns['bullish_engulfing'].iloc[-1] and direction != "SELL":
+            signal_strength += 0.2
+            direction = "BUY"
+        elif patterns['bearish_engulfing'].iloc[-1] and direction != "BUY":
+            signal_strength += 0.2
+            direction = "SELL"
+            
+        return PASignal(
+            strength=min(signal_strength, 1.0),
+            direction=direction,
+            pattern="technical",
+            timeframe=str(timeframe)
+        )
